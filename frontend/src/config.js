@@ -21,7 +21,7 @@ export const PADDLE_ENV = import.meta.env.VITE_PADDLE_ENV || ''; // 'sandbox' | 
 // Starter tier is free — no price IDs needed.
 // Pro tier
 export const PADDLE_PRICE_PRO_MONTH   = import.meta.env.VITE_PADDLE_PRICE_PRO_MONTH   || '';
-export const PADDLE_PRICE_PRO_YEAR    = import.meta.env.VITE_PADDLE_PRICE_PRO_YEAR    || '';
+export const PADDLE_PRICE_PRO_YEAR    = import.meta.env.VITE_PADDLE_PRICE_PRO_YEAR    || PADDLE_PRICE_PRO_MONTH;
 // Advanced tier
 export const PADDLE_PRICE_ADVANCED_MONTH = import.meta.env.VITE_PADDLE_PRICE_ADVANCED_MONTH || '';
-export const PADDLE_PRICE_ADVANCED_YEAR  = import.meta.env.VITE_PADDLE_PRICE_ADVANCED_YEAR  || '';
+export const PADDLE_PRICE_ADVANCED_YEAR  = import.meta.env.VITE_PADDLE_PRICE_ADVANCED_YEAR  || PADDLE_PRICE_ADVANCED_MONTH;
