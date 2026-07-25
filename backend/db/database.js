@@ -73,10 +73,11 @@ db.run(`
         console.log('Optional user avatarPath column addition notice:', alterErr.message);
       }
     });
-    // Billing columns (Paddle). plan defaults to 'free'; the rest populate
+    // Billing columns (Paddle). plan defaults to 'starter' (the free tier
+    // in the 3-tier Starter/Pro/Advanced model); the rest populate
     // once a user starts a checkout / a subscription webhook comes in.
     const billingColumns = [
-      "plan TEXT NOT NULL DEFAULT 'free'",
+      "plan TEXT NOT NULL DEFAULT 'starter'",
       'paddleCustomerId TEXT',
       'paddleSubscriptionId TEXT',
       'subscriptionStatus TEXT',
