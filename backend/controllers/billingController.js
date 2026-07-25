@@ -1,206 +1,374 @@
-import { Paddle, Environment, EventName } from '@paddle/paddle-node-sdk';
-import UserModel from '../models/UserModel.js';
+import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { initializePaddle } from '@paddle/paddle-js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { useToast } from '../context/ToastContext.jsx';
+import { billingApi } from '../services/billingApi.js';
+import { Logo } from '../components/Icons.jsx';
+import { PADDLE_CLIENT_TOKEN, PADDLE_ENV, API_BASE_URL } from '../config.js';
+import { TIERS, ALL_PRICE_IDS } from '../tiers.js';
 
-// Lazily construct the client so the app doesn't crash on boot if
-// PADDLE_API_KEY hasn't been set yet (e.g. before the entity/account exists).
-// PADDLE_ENV controls which Paddle API this hits — 'sandbox' or 'production'.
-// This MUST match where the API key was generated, or every call fails.
-let paddleClient = null;
-function getPaddleClient() {
-  if (!process.env.PADDLE_API_KEY) return null;
-  if (!paddleClient) {
-    const environment =
-      process.env.PADDLE_ENV === 'production' ? Environment.production : Environment.sandbox;
-    paddleClient = new Paddle(process.env.PADDLE_API_KEY, { environment });
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Fetch the visitor's country from the backend (reads x-vercel-ip-country).
+ *  Returns a 2-letter ISO code or null — null means "let Paddle auto-detect". */
+async function fetchCountry() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/billing/country`);
+    if (!res.ok) return null;
+    const { country } = await res.json();
+    // Guard: never pass a sentinel/empty/unknown value to Paddle
+    return country && country.length === 2 ? country : null;
+  } catch {
+    return null;
   }
-  return paddleClient;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/billing/country  (no auth required)
+// Icons (inline so no extra file needed)
 // ─────────────────────────────────────────────────────────────────────────────
-// Returns the visitor's 2-letter ISO country code read from the
-// x-vercel-ip-country header that Vercel injects on every request.
-// The frontend uses this to pass a country hint to Paddle.PricePreview() so
-// prices are localized to the visitor's location.
-//
-// We deliberately return null (not a sentinel like 'OTHERS') if the header is
-// absent or doesn't look like a real ISO code — the frontend must NOT pass
-// anything invalid to Paddle; it should let Paddle auto-detect from the IP.
-export const getCountry = (req, res) => {
-  const raw = req.headers['x-vercel-ip-country'];
-  // Only return a value that looks like a real 2-letter ISO 3166-1 alpha-2 code.
-  const country = raw && /^[A-Z]{2}$/.test(raw) ? raw : null;
-  res.status(200).json({ country });
-};
+function CheckCircleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="7.5" stroke="currentColor" strokeOpacity="0.3" />
+      <path d="M5 8l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/billing/customer  (requireAuth)
+// PricingCard
 // ─────────────────────────────────────────────────────────────────────────────
-// Called by the logged-in user right before opening the Paddle.js checkout
-// overlay. Ensures we have a Paddle customer id linked to this user *before*
-// they pay, so the webhook that arrives after payment can find them again.
-export const getOrCreateCustomer = async (req, res) => {
-  try {
-    const paddle = getPaddleClient();
+function PricingCard({ tier, billing, formattedPrice, loadingPlan, onSubscribe, currentPlan, configError }) {
+  const isFree     = !tier.priceId.month && !tier.priceId.year;
+  const isCurrent  = currentPlan === tier.name.toLowerCase();
+  const isLoading  = loadingPlan === tier.name;
+  const activePriceId = billing === 'year' ? tier.priceId.year : tier.priceId.month;
+
+  // Price display: show Paddle's formatted total, or $0 for free, or "…" while loading
+  let priceDisplay = '…';
+  if (isFree) {
+    priceDisplay = '$0';
+  } else if (formattedPrice) {
+    priceDisplay = formattedPrice;
+  }
+
+  return (
+    <div
+      className={`relative flex flex-col rounded-2xl p-7 transition-all duration-200 ${
+        tier.popular
+          ? 'bg-gradient-to-b from-brand-500/15 to-dark-900/60 border-2 border-brand-500/40 shadow-xl shadow-brand-500/10'
+          : 'bg-dark-900/50 border border-dark-800/50 hover:border-dark-700/70'
+      }`}
+    >
+      {/* Most Popular badge */}
+      {tier.popular && (
+        <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full bg-gradient-to-r from-brand-500 to-brand-600 text-white text-xs font-semibold tracking-wide shadow-lg">
+          Most Popular
+        </div>
+      )}
+
+      {/* Name + description */}
+      <div className="mb-5">
+        <h3 className="text-xl font-bold text-white mb-1.5">{tier.name}</h3>
+        <p className="text-sm text-dark-400 leading-relaxed">{tier.description}</p>
+      </div>
+
+      {/* Price */}
+      <div className="mb-6">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-4xl font-extrabold text-white">{priceDisplay}</span>
+          {!isFree && <span className="text-dark-500 text-sm">/ {billing === 'year' ? 'yr' : 'mo'}</span>}
+        </div>
+        {isFree && <p className="text-xs text-dark-500 mt-1">Free forever</p>}
+      </div>
+
+      {/* Features */}
+      <ul className="space-y-2.5 mb-8 flex-1">
+        {tier.features.map((f) => (
+          <li key={f} className="flex items-start gap-2.5 text-sm text-dark-300">
+            <span className="mt-0.5 text-brand-400 flex-shrink-0">
+              <CheckCircleIcon />
+            </span>
+            {f}
+          </li>
+        ))}
+      </ul>
+
+      {/* CTA */}
+      {isCurrent ? (
+        <div className="w-full py-2.5 text-center rounded-xl bg-dark-800 text-dark-400 text-sm font-medium">
+          Current plan
+        </div>
+      ) : isFree ? (
+        <div className="w-full py-2.5 text-center rounded-xl bg-dark-800/50 text-dark-500 text-sm">
+          No subscription needed
+        </div>
+      ) : (
+        <button
+          onClick={() => onSubscribe(tier, activePriceId)}
+          disabled={isLoading || Boolean(configError) || !activePriceId}
+          className={`w-full py-3 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+            tier.popular
+              ? 'bg-gradient-to-r from-brand-500 to-brand-600 text-white hover:from-brand-400 hover:to-brand-500 shadow-lg shadow-brand-500/20'
+              : 'bg-dark-800 text-white hover:bg-dark-700 border border-dark-700'
+          }`}
+        >
+          {isLoading ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              Opening checkout…
+            </span>
+          ) : (
+            `Subscribe to ${tier.name}`
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BillingPage (main export)
+// ─────────────────────────────────────────────────────────────────────────────
+export default function BillingPage() {
+  const { token, user } = useAuth();
+  const { addToast } = useToast();
+
+  const [paddle, setPaddle]           = useState(null);
+  const [configError, setConfigError] = useState(null);
+  const [billing, setBilling]         = useState('month'); // 'month' | 'year'
+  const [subscription, setSubscription] = useState(null);
+  const [loadingPlan, setLoadingPlan] = useState(null); // tier.name being opened
+  const [openingPortal, setOpeningPortal] = useState(false);
+  // Maps priceId -> Paddle's own formatted total string (e.g. "$29.00").
+  // We NEVER format or compute prices ourselves — only display what Paddle returns.
+  const [formattedPrices, setFormattedPrices] = useState({});
+
+  // ── 1. Initialize Paddle ──────────────────────────────────────────────────
+  // Fail loudly if env vars are missing — a silent fallback risks pointing at
+  // the wrong Paddle environment/account.
+  useEffect(() => {
+    if (!PADDLE_ENV) {
+      setConfigError(
+        'VITE_PADDLE_ENV is not set (expected "sandbox" or "production"). Refusing to load checkout.'
+      );
+      return;
+    }
+    if (!PADDLE_CLIENT_TOKEN) {
+      setConfigError('VITE_PADDLE_CLIENT_TOKEN is not set.');
+      return;
+    }
+    initializePaddle({ environment: PADDLE_ENV, token: PADDLE_CLIENT_TOKEN })
+      .then((instance) => setPaddle(instance))
+      .catch((err) => setConfigError(`Paddle init failed: ${err.message}`));
+  }, []);
+
+  // ── 2. Fetch localized prices from Paddle once it's ready ─────────────────
+  // We batch all price IDs into a single PricePreview call and store
+  // Paddle's formattedTotals.total keyed by priceId. No client-side math.
+  useEffect(() => {
+    if (!paddle || ALL_PRICE_IDS.length === 0) return;
+
+    (async () => {
+      // Detect country from backend (reads x-vercel-ip-country header).
+      // If absent, pass nothing — Paddle auto-detects from visitor IP.
+      const country = await fetchCountry();
+
+      const previewArgs = {
+        items: ALL_PRICE_IDS.map((id) => ({ priceId: id, quantity: 1 })),
+      };
+      if (country) previewArgs.address = { countryCode: country };
+
+      try {
+        const result = await paddle.PricePreview(previewArgs);
+        const lineItems = result?.data?.details?.lineItems || [];
+        const next = {};
+        lineItems.forEach((item) => {
+          next[item.price.id] = item.formattedTotals.total;
+        });
+        setFormattedPrices(next);
+      } catch (err) {
+        console.error('Paddle PricePreview failed:', err.message);
+      }
+    })();
+  }, [paddle]);
+
+  // ── 3. Load subscription status ───────────────────────────────────────────
+  const loadSubscription = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await billingApi.getSubscription(token);
+      setSubscription(res.data);
+    } catch {
+      // Non-fatal — page still works, just won't highlight the active plan.
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadSubscription();
+  }, [loadSubscription]);
+
+  // ── 4. Open Paddle checkout overlay ──────────────────────────────────────
+  const handleSubscribe = async (tier, activePriceId) => {
+    if (!activePriceId) return;
+    if (configError) {
+      addToast(configError, 'error');
+      return;
+    }
     if (!paddle) {
-      return res.status(503).json({ success: false, message: 'Billing is not configured yet.' });
+      addToast('Checkout is still loading, please try again in a moment.', 'error');
+      return;
     }
 
-    const user = await UserModel.getById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found.' });
-    }
+    setLoadingPlan(tier.name);
+    try {
+      // Ensure a Paddle customer record is linked to this user before checkout,
+      // so the post-payment webhook can identify them.
+      const { data } = await billingApi.getOrCreateCustomer(token);
 
-    // Reuse an existing Paddle customer if we already linked one.
-    if (user.paddleCustomerId) {
-      return res.status(200).json({ success: true, data: { paddleCustomerId: user.paddleCustomerId } });
-    }
-
-    // A Paddle customer with this email may already exist (e.g. from an
-    // earlier attempt before this user's row was linked). Look it up first
-    // instead of blindly creating, which Paddle rejects as a conflict.
-    let customer;
-    const existingCollection = paddle.customers.list({ email: [user.email] });
-    const existingPage = await existingCollection.next();
-    if (existingPage && existingPage.length > 0) {
-      customer = existingPage[0];
-    } else {
-      customer = await paddle.customers.create({
-        email: user.email,
-        name: user.name,
-        customData: { userId: user.id },
+      paddle.Checkout.open({
+        items: [{ priceId: activePriceId, quantity: 1 }],
+        customer: {
+          id: data.paddleCustomerId,
+          email: user?.email || undefined, // prefill if signed in
+        },
+        settings: {
+          displayMode: 'overlay',
+          variant: 'one-page',
+          theme: 'dark',
+          successUrl: `${window.location.origin}/welcome`,
+        },
       });
+    } catch (err) {
+      addToast(err.message || 'Could not start checkout.', 'error');
+    } finally {
+      setLoadingPlan(null);
     }
+  };
 
-    await UserModel.setPaddleCustomerId(user.id, customer.id);
-
-    res.status(200).json({ success: true, data: { paddleCustomerId: customer.id } });
-  } catch (err) {
-    console.error('Paddle getOrCreateCustomer error:', err.message, err.body || err);
-    res.status(500).json({ success: false, message: 'Failed to prepare checkout.', error: err.message });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/billing/subscription  (requireAuth)
-// ─────────────────────────────────────────────────────────────────────────────
-// Returns the signed-in user's current plan/subscription status, for the
-// frontend to gate features and show billing info.
-export const getMySubscription = async (req, res) => {
-  try {
-    const user = await UserModel.getById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found.' });
+  // ── 5. Open Paddle-hosted customer portal (manage/cancel subscription) ────
+  const handleManageBilling = async () => {
+    setOpeningPortal(true);
+    try {
+      const { data } = await billingApi.openPortal(token);
+      window.location.href = data.url;
+    } catch (err) {
+      addToast(err.message || 'Could not open billing portal.', 'error');
+      setOpeningPortal(false);
     }
-    res.status(200).json({
-      success: true,
-      data: {
-        plan: user.plan || 'starter',
-        subscriptionStatus: user.subscriptionStatus || null,
-        currentPeriodEnd: user.currentPeriodEnd || null,
-      },
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to fetch subscription.', error: err.message });
-  }
-};
+  };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Webhook helpers
-// ─────────────────────────────────────────────────────────────────────────────
+  const currentPlan = subscription?.plan || user?.plan || 'starter';
 
-// Maps a Paddle price id (from env) to the plan name we store on the user.
-// Monthly and yearly price IDs both map to the same plan name.
-function planFromPriceId(priceId) {
-  if (!priceId) return 'starter';
+  return (
+    <div className="min-h-screen bg-dark-950">
+      {/* ── Header ── */}
+      <header className="border-b border-dark-800/50 px-6 py-4 flex items-center justify-between">
+        <Link to="/dashboard" className="flex items-center gap-2">
+          <Logo />
+          <span className="font-bold text-white">NexusAI</span>
+        </Link>
+        <Link to="/dashboard" className="text-sm text-dark-400 hover:text-white transition-colors">
+          ← Back to dashboard
+        </Link>
+      </header>
 
-  const {
-    PADDLE_PRICE_PRO_MONTH,
-    PADDLE_PRICE_PRO_YEAR,
-    PADDLE_PRICE_ADVANCED_MONTH,
-    PADDLE_PRICE_ADVANCED_YEAR,
-  } = process.env;
+      {/* ── Manage Billing (Paddle-hosted customer portal) ── */}
+      {subscription?.plan && subscription.plan !== 'starter' && (
+        <div className="max-w-6xl mx-auto px-6 pt-6 flex justify-end">
+          <button
+            onClick={handleManageBilling}
+            disabled={openingPortal}
+            className="text-sm text-brand-400 hover:text-brand-300 transition-colors disabled:opacity-60"
+          >
+            {openingPortal ? 'Opening…' : 'Manage billing →'}
+          </button>
+        </div>
+      )}
 
-  if (priceId === PADDLE_PRICE_ADVANCED_MONTH || priceId === PADDLE_PRICE_ADVANCED_YEAR) {
-    return 'advanced';
-  }
-  if (priceId === PADDLE_PRICE_PRO_MONTH || priceId === PADDLE_PRICE_PRO_YEAR) {
-    return 'pro';
-  }
-  return 'starter';
+      {/* ── Main ── */}
+      <main className="max-w-6xl mx-auto px-6 py-16">
+        {/* Title */}
+        <div className="text-center mb-10">
+          <span className="inline-block px-4 py-1.5 rounded-full bg-brand-500/10 text-brand-400 text-sm font-medium mb-4">
+            Pricing
+          </span>
+          <h1 className="text-3xl sm:text-4xl font-bold text-white mb-3">Choose your plan</h1>
+          <p className="text-dark-400 max-w-md mx-auto">
+            Upgrade anytime. Cancel anytime. All billing handled securely by Paddle.
+          </p>
+
+          {/* Config error banner */}
+          {configError && (
+            <p className="mt-4 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-5 py-3 inline-block">
+              ⚠ {configError}
+            </p>
+          )}
+        </div>
+
+        {/* Monthly / Yearly toggle */}
+        <div className="flex items-center justify-center gap-4 mb-12">
+          <span className={`text-sm font-medium transition-colors ${billing === 'month' ? 'text-white' : 'text-dark-500'}`}>
+            Monthly
+          </span>
+          <button
+            onClick={() => setBilling(billing === 'month' ? 'year' : 'month')}
+            aria-label="Toggle billing period"
+            className="relative w-14 h-7 rounded-full bg-dark-800 border border-dark-700 focus:outline-none focus:ring-2 focus:ring-brand-500/50 transition-colors"
+          >
+            <div
+              className={`absolute top-0.5 w-6 h-6 rounded-full bg-brand-500 shadow transition-transform duration-200 ${
+                billing === 'year' ? 'translate-x-7' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+          <span className={`text-sm font-medium transition-colors ${billing === 'year' ? 'text-white' : 'text-dark-500'}`}>
+            Yearly
+          </span>
+          <span className="hidden sm:inline-flex items-center px-2.5 py-1 rounded-md bg-green-500/10 text-green-400 text-xs font-semibold">
+            Save 20%
+          </span>
+        </div>
+
+        {/* Tier cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8">
+          {TIERS.map((tier) => {
+            const activePriceId = billing === 'year' ? tier.priceId.year : tier.priceId.month;
+            return (
+              <PricingCard
+                key={tier.name}
+                tier={tier}
+                billing={billing}
+                formattedPrice={activePriceId ? formattedPrices[activePriceId] : null}
+                loadingPlan={loadingPlan}
+                onSubscribe={handleSubscribe}
+                currentPlan={currentPlan}
+                configError={configError}
+              />
+            );
+          })}
+        </div>
+
+        {/* Trust footer */}
+        <p className="text-center text-xs text-dark-600 mt-12">
+          Payments processed securely by{' '}
+          
+            href="https://www.paddle.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-dark-500 hover:text-dark-300 transition-colors underline underline-offset-2"
+          >
+            Paddle
+          </a>
+          . Prices shown include applicable taxes.
+        </p>
+      </main>
+    </div>
+  );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/billing/webhook  (raw body — no auth)
-// ─────────────────────────────────────────────────────────────────────────────
-// Must receive the RAW request body (see app.js, where express.raw() is
-// applied to this route before express.json()) so the signature can be
-// verified. Never respond 4xx on our own bugs — Paddle would retry forever.
-export const handlePaddleWebhook = async (req, res) => {
-  const paddle = getPaddleClient();
-  if (!paddle) {
-    return res.status(503).json({ success: false, message: 'Billing is not configured yet.' });
-  }
-
-  const signature = req.headers['paddle-signature'];
-  const secret = process.env.PADDLE_WEBHOOK_SECRET;
-
-  // Temporary diagnostics: confirms the secret is loaded and the body arrived
-  // as a raw Buffer. Safe to remove once webhooks are confirmed working.
-  console.log('Webhook debug:', {
-    hasSecret: Boolean(secret),
-    secretLength: secret ? secret.length : 0,
-    hasSignatureHeader: Boolean(signature),
-    bodyIsBuffer: Buffer.isBuffer(req.body),
-    bodyType: typeof req.body,
-  });
-
-  let event;
-  try {
-    event = await paddle.webhooks.unmarshal(req.body.toString(), secret, signature);
-  } catch (err) {
-    console.error('Paddle webhook signature verification failed:', err.message);
-    return res.status(400).json({ success: false, message: 'Invalid webhook signature.' });
-  }
-
-  if (!event) {
-    return res.status(400).json({ success: false, message: 'Could not parse webhook.' });
-  }
-
-  try {
-    switch (event.eventType) {
-      case EventName.SubscriptionCreated:
-      case EventName.SubscriptionUpdated: {
-        const sub = event.data;
-        const priceId = sub.items?.[0]?.price?.id;
-        await UserModel.updateSubscription(sub.customerId, {
-          plan: planFromPriceId(priceId),
-          paddleSubscriptionId: sub.id,
-          subscriptionStatus: sub.status, // active, trialing, past_due, paused, canceled
-          currentPeriodEnd: sub.currentBillingPeriod?.endsAt || null,
-        });
-        break;
-      }
-      case EventName.SubscriptionCanceled: {
-        const sub = event.data;
-        await UserModel.updateSubscription(sub.customerId, {
-          plan: 'starter',
-          paddleSubscriptionId: sub.id,
-          subscriptionStatus: 'canceled',
-          currentPeriodEnd: null,
-        });
-        break;
-      }
-      default:
-        // Other events (transaction.*, customer.*, etc.) are ignored for now.
-        break;
-    }
-    res.status(200).json({ success: true });
-  } catch (err) {
-    console.error('Error processing Paddle webhook:', err.message);
-    // Still 200 so Paddle doesn't hammer us with retries for a bug on our
-    // side; the event is logged above for manual follow-up.
-    res.status(200).json({ success: false, message: 'Webhook processed with errors.' });
-  }
-};
