@@ -182,7 +182,7 @@ export default function BillingPage() {
       const previewArgs = {
         items: ALL_PRICE_IDS.map((id) => ({ priceId: id, quantity: 1 })),
       };
-      if (country) previewArgs.customerIpAddress = country; // pass country code only
+     if (country) previewArgs.customerIpAddress = country; // pass country code only
 
       try {
         const result = await paddle.PricePreview(previewArgs);
