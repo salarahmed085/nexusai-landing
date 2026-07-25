@@ -145,6 +145,7 @@ export default function BillingPage() {
   const [billing, setBilling]         = useState('month'); // 'month' | 'year'
   const [subscription, setSubscription] = useState(null);
   const [loadingPlan, setLoadingPlan] = useState(null); // tier.name being opened
+  const [openingPortal, setOpeningPortal] = useState(false);
   // Maps priceId -> Paddle's own formatted total string (e.g. "$29.00").
   // We NEVER format or compute prices ourselves — only display what Paddle returns.
   const [formattedPrices, setFormattedPrices] = useState({});
@@ -182,7 +183,7 @@ export default function BillingPage() {
       const previewArgs = {
         items: ALL_PRICE_IDS.map((id) => ({ priceId: id, quantity: 1 })),
       };
-     if (country) previewArgs.address = { countryCode: country };
+      if (country) previewArgs.address = { countryCode: country };
 
       try {
         const result = await paddle.PricePreview(previewArgs);
@@ -251,6 +252,18 @@ export default function BillingPage() {
     }
   };
 
+  // ── 5. Open Paddle-hosted customer portal (manage/cancel subscription) ────
+  const handleManageBilling = async () => {
+    setOpeningPortal(true);
+    try {
+      const { data } = await billingApi.openPortal(token);
+      window.location.href = data.url;
+    } catch (err) {
+      addToast(err.message || 'Could not open billing portal.', 'error');
+      setOpeningPortal(false);
+    }
+  };
+
   const currentPlan = subscription?.plan || user?.plan || 'starter';
 
   return (
@@ -265,6 +278,19 @@ export default function BillingPage() {
           ← Back to dashboard
         </Link>
       </header>
+
+      {/* ── Manage Billing (Paddle-hosted customer portal) ── */}
+      {subscription?.plan && subscription.plan !== 'starter' && (
+        <div className="max-w-6xl mx-auto px-6 pt-6 flex justify-end">
+          <button
+            onClick={handleManageBilling}
+            disabled={openingPortal}
+            className="text-sm text-brand-400 hover:text-brand-300 transition-colors disabled:opacity-60"
+          >
+            {openingPortal ? 'Opening…' : 'Manage billing →'}
+          </button>
+        </div>
+      )}
 
       {/* ── Main ── */}
       <main className="max-w-6xl mx-auto px-6 py-16">
@@ -332,7 +358,7 @@ export default function BillingPage() {
         {/* Trust footer */}
         <p className="text-center text-xs text-dark-600 mt-12">
           Payments processed securely by{' '}
-          <a
+          
             href="https://www.paddle.com"
             target="_blank"
             rel="noopener noreferrer"
