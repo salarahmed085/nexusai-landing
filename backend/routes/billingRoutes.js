@@ -4,6 +4,7 @@ import {
   getCountry,
   getOrCreateCustomer,
   getMySubscription,
+  createPortalSession,
   handlePaddleWebhook,
 } from '../controllers/billingController.js';
 
@@ -16,6 +17,7 @@ router.get('/country', getCountry);
 // Authenticated endpoints (used by the logged-in app).
 router.post('/customer', requireAuth, getOrCreateCustomer);
 router.get('/subscription', requireAuth, getMySubscription);
+router.post('/portal', requireAuth, createPortalSession);
 
 // Note: app.js applies express.raw() to /api/billing/webhook specifically,
 // BEFORE the global express.json() middleware, so the handler below gets
