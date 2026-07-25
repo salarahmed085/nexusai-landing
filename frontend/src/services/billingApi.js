@@ -19,4 +19,10 @@ export const billingApi = {
     fetch(`${API_BASE}/billing/subscription`, {
       headers: { Authorization: `Bearer ${token}` },
     }).then(handleResponse),
+
+  openPortal: (token) =>
+    fetch(`${API_BASE}/billing/portal`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(handleResponse),
 };
