@@ -355,9 +355,9 @@ export default function BillingPage() {
         </div>
 
         {/* Trust footer */}
-    <p className="text-center text-xs text-dark-600 mt-12">
+        <p className="text-center text-xs text-dark-600 mt-12">
           Payments processed securely by{' '}
-          
+          <a
             href="https://www.paddle.com"
             target="_blank"
             rel="noopener noreferrer"
