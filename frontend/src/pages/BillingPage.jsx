@@ -236,7 +236,6 @@ export default function BillingPage() {
         items: [{ priceId: activePriceId, quantity: 1 }],
         customer: {
           id: data.paddleCustomerId,
-          email: user?.email || undefined, // prefill if signed in
         },
         settings: {
           displayMode: 'overlay',
